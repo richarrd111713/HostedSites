@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>GLTS Auto Preview</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script>
+    window.addEventListener('DOMContentLoaded', () => {
+      // CHANGE THIS: the original site you want to preview
+      const targetSite = 'https://fishingrod.fpr.net';
+
+      // We'll open a BLANK tab and write an iframe that points to the worker proxy directly
+      // Use your worker origin + ?url=target so each iframe uses the proxy endpoint
+      const workerOrigin = 'https://gltsclasstools.segundoazjustin633.workers.dev';
+      const proxied = workerOrigin + '/?url=' + encodeURIComponent(targetSite);
+
+      // Open a blank tab synchronously (user-initiated)
+      const w = window.open('', '_blank');
+      if (!w) {
+        alert('Popup blocked! Please allow popups for this page and try again.');
+        return;
+      }
+
+      // Write HTML containing a full-viewport iframe pointed at proxied URL
+      const html = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GLTS Preview</title><style>html,body{height:100%;margin:0}iframe{width:100%;height:100%;border:0}</style></head><body><iframe src="' + proxied + '"></iframe></body></html>';
+
+      w.document.open();
+      w.document.write(html);
+      w.document.close();
+
+      // Close the opener tab to mimic an online "preview"
+      try { window.close(); } catch(e) {}
+    });
+  </script>
+</head>
+<body>
+  <p>Opening preview… (allow popups if blocked)</p>
+</body>
+</html>
