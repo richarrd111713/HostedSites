@@ -1,0 +1,15 @@
+{
+  "name": "ws-proxy",
+  "version": "1.0.0",
+  "description": "Simple WebSocket bridge for GLTS proxy",
+  "main": "ws-proxy.js",
+  "scripts": {
+    "start": "node ws-proxy.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "dependencies": {
+    "ws": "^8.13.0"
+  }
+}
