@@ -1,21 +1,19 @@
-# Dockerfile (Node 18 on Alpine - small & compatible)
+# Dockerfile (Node 18 on Alpine - simple & reliable)
 FROM node:18-alpine
 
-# Create app dir
 WORKDIR /app
 
-# Copy package files first for better cache usage
+# Copy package.json (and package-lock.json if present)
 COPY package.json package-lock.json* ./
 
-# Install only production deps
-RUN npm ci --only=production
+# Install dependencies (uses npm install so lockfile is optional)
+# Use --omit=dev to skip dev deps in modern npm
+RUN npm install --omit=dev --no-audit --no-fund
 
 # Copy app source
 COPY . .
 
-# Expose the port the app will listen on
 ENV PORT=8080
 EXPOSE 8080
 
-# Start the proxy
 CMD ["node", "ws-proxy.js"]
