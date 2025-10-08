@@ -3,97 +3,70 @@ import { JSDOM } from "jsdom";
 
 export default async function handler(req, res) {
   const target = req.query.url;
-  if (!target) return res.status(400).send("Missing ?url=");
+  if (!target) {
+    res.status(400).send("Missing ?url=");
+    return;
+  }
 
   try {
     const upstream = await fetch(target, {
+      redirect: "follow",
       headers: {
-        "user-agent": req.headers["user-agent"] || "Mozilla/5.0 (ProxyBrowser)",
+        "user-agent": req.headers["user-agent"] || "Mozilla/5.0 (proxy)",
         accept: req.headers["accept"] || "*/*",
       },
     });
 
-    // --- 1️⃣ Remove restrictive headers ---
-    const headers = Object.fromEntries(upstream.headers.entries());
-    delete headers["content-security-policy"];
-    delete headers["x-frame-options"];
-    delete headers["frame-ancestors"];
+    if (!upstream.ok) {
+      res.status(upstream.status).send(`Upstream returned ${upstream.status}`);
+      return;
+    }
 
-    const contentType = headers["content-type"] || "";
+    const contentType = upstream.headers.get("content-type") || "";
+    const buffer = await upstream.arrayBuffer();
 
-    // --- 2️⃣ Directly return non-HTML content (images, JS, CSS, etc.) ---
+    // For non-HTML (fonts, CSS, JS, images) — just stream it through.
     if (!contentType.includes("text/html")) {
       res.setHeader("Content-Type", contentType);
-      const buffer = await upstream.arrayBuffer();
+      if (upstream.headers.get("cache-control"))
+        res.setHeader("Cache-Control", upstream.headers.get("cache-control"));
+      if (upstream.headers.get("content-length"))
+        res.setHeader("Content-Length", upstream.headers.get("content-length"));
+      res.status(upstream.status);
       res.send(Buffer.from(buffer));
       return;
     }
 
-    // --- 3️⃣ Parse and rewrite HTML ---
-    const html = await upstream.text();
+    // --- HTML Rewriting ---
+    const html = Buffer.from(buffer).toString("utf8");
     const dom = new JSDOM(html);
     const doc = dom.window.document;
 
-    const proxyBase = `${req.headers["x-forwarded-proto"] || "https"}://${req.headers.host}/api/rewrite?url=`;
-
-    // Helper for rewriting absolute URLs
-    const rewriteUrl = (url) => {
-      if (!url) return url;
-      if (url.startsWith("data:") || url.startsWith("blob:")) return url;
-      const absolute = new URL(url, target).href;
-      return proxyBase + encodeURIComponent(absolute);
-    };
-
-    // --- 4️⃣ Rewrite anchors (links) ---
-    doc.querySelectorAll("a[href]").forEach((a) => {
-      const href = a.getAttribute("href");
-      if (!href || href.startsWith("#") || href.startsWith("javascript:")) return;
-      a.href = rewriteUrl(href);
-    });
-
-    // --- 5️⃣ Rewrite src/href attributes of common elements ---
-    doc.querySelectorAll("[src], [href]").forEach((el) => {
-      const attr = el.hasAttribute("src") ? "src" : "href";
-      const val = el.getAttribute(attr);
-      if (!val || val.startsWith("#") || val.startsWith("javascript:")) return;
-      el.setAttribute(attr, rewriteUrl(val));
-    });
-
-    // --- 6️⃣ Fix <base> ---
+    // Fix <base> to resolve relative URLs
     const base = doc.createElement("base");
     base.href = target;
     doc.head.prepend(base);
 
-    // --- 7️⃣ Inject JS to neutralize CSP + X-Frame runtime restrictions ---
-    const bypassScript = doc.createElement("script");
-    bypassScript.textContent = `
-      // Disable frame-busting
-      if (window.top !== window.self) {
-        window.onbeforeunload = null;
-        document.querySelectorAll('script').forEach(s => {
-          if (s.innerText.includes('top.location')) s.remove();
-        });
-      }
-      // Patch window.open to open inside proxy
-      const _open = window.open;
-      window.open = function(url, name, specs) {
-        const newUrl = '${proxyBase}' + encodeURIComponent(new URL(url, '${target}').href);
-        return _open(newUrl, name || '_blank', specs);
-      };
-      // Patch location changes
-      const _assign = window.location.assign.bind(window.location);
-      window.location.assign = (u) => _assign('${proxyBase}' + encodeURIComponent(new URL(u, '${target}').href));
-    `;
-    doc.body.appendChild(bypassScript);
+    // Rewrite anchors
+    doc.querySelectorAll("a[href]").forEach(a => {
+      const href = a.getAttribute("href");
+      if (!href || href.startsWith("#") || href.startsWith("javascript:")) return;
+      const abs = new URL(href, target).href;
+      a.setAttribute("href", `/api/rewrite?url=${encodeURIComponent(abs)}`);
+    });
 
-    // --- 8️⃣ Return clean HTML ---
+    // Rewrite src/href in assets
+    doc.querySelectorAll("img[src], script[src], link[href]").forEach(el => {
+      const attr = el.src ? "src" : "href";
+      const val = el[attr];
+      if (!val || val.startsWith("data:")) return;
+      const abs = new URL(val, target).href;
+      el[attr] = `/api/rewrite?url=${encodeURIComponent(abs)}`;
+    });
+
     res.setHeader("Content-Type", "text/html");
-    res.setHeader("X-Frame-Options", "ALLOWALL");
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-
     res.send(dom.serialize());
+
   } catch (err) {
     console.error("Rewrite error:", err);
     res.status(500).send("Rewrite error: " + err.message);
