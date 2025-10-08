@@ -1,4 +1,3 @@
-// api/rewrite.js
 import fetch from "node-fetch";
 import { JSDOM } from "jsdom";
 
@@ -10,70 +9,69 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Fetch the target page
+    // Fetch the original page
     const upstream = await fetch(target, {
-      headers: { "user-agent": "Mozilla/5.0 (proxy)" },
-      redirect: "follow",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Proxy-Browser)"
+      }
     });
 
     const contentType = upstream.headers.get("content-type") || "";
 
-    // Non-HTML (fonts, JS, CSS, images, etc.)
+    // If it's not HTML (e.g., image, JS, CSS), just proxy directly
     if (!contentType.includes("text/html")) {
       const buffer = await upstream.arrayBuffer();
-
-      // Set proper content type
       res.setHeader("Content-Type", contentType);
-
-      // Set CORS headers
       res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "*");
-
-      res.send(Buffer.from(buffer));
-      return;
+      return res.send(Buffer.from(buffer));
     }
 
-    // HTML page
+    // Parse HTML
     const html = await upstream.text();
     const dom = new JSDOM(html);
     const doc = dom.window.document;
 
-    // Rewrite all links (<a>) to stay in proxy
+    // Add CORS headers to make iframeable
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("X-Frame-Options", "ALLOWALL");
+    res.setHeader("Content-Security-Policy", "frame-ancestors *");
+
+    // Fix base for relative URLs
+    const base = doc.querySelector("base") || doc.createElement("base");
+    base.href = target;
+    if (!doc.querySelector("base")) doc.head.prepend(base);
+
+    // Rewrite <a> links to go through the proxy
     doc.querySelectorAll("a[href]").forEach(a => {
       const href = a.getAttribute("href");
-      if (!href.startsWith("#") && !href.startsWith("javascript:")) {
-        const newHref = new URL(href, target).href;
-        a.href = `/api/rewrite?url=${encodeURIComponent(newHref)}`;
-      }
+      if (!href || href.startsWith("#") || href.startsWith("javascript:")) return;
+      const absoluteHref = new URL(href, target).href;
+      a.href = `/api/rewrite?url=${encodeURIComponent(absoluteHref)}`;
     });
 
-    // Rewrite assets (images, scripts, CSS, fonts, videos, iframes)
-    doc.querySelectorAll(
-      "img[src], script[src], link[href], video[src], audio[src], source[src], iframe[src]"
-    ).forEach(el => {
+    // Rewrite assets: images, scripts, CSS, fonts, videos, iframes
+    const selectors = "img[src], script[src], link[href], video[src], audio[src], source[src], iframe[src]";
+    doc.querySelectorAll(selectors).forEach(el => {
       const attr = el.src ? "src" : "href";
       const val = el[attr];
-      if (val && !val.startsWith("data:")) {
-        const newURL = new URL(val, target).href;
-        el[attr] = `/api/rewrite?url=${encodeURIComponent(newURL)}`;
+      if (!val || val.startsWith("data:")) return;
+
+      const absoluteURL = new URL(val, target).href;
+
+      // Prevent rewriting our own proxy URLs (avoid 404)
+      if (absoluteURL.startsWith("https://rewriter-roan.vercel.app/api/")) {
+        el[attr] = absoluteURL;
+      } else {
+        el[attr] = `/api/rewrite?url=${encodeURIComponent(absoluteURL)}`;
       }
     });
 
-    // Inject a <base> to keep relative URLs working
-    const base = doc.createElement("base");
-    base.href = `/api/rewrite?url=${encodeURIComponent(target)}`;
-    doc.head.prepend(base);
-
-    // Add CORS headers for HTML too
+    // Serialize and return the rewritten HTML
     res.setHeader("Content-Type", "text/html");
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "*");
-
     res.send(dom.serialize());
+
   } catch (err) {
-    console.error(err);
+    console.error("Rewrite error:", err);
     res.status(500).send("Rewrite error");
   }
 }
