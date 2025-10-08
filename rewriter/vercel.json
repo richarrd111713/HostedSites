@@ -1,9 +1,11 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "api/rewrite.js",
-      "use": "@vercel/node"
+  "functions": {
+    "api/rewrite.js": {
+      "runtime": "nodejs20.x"
     }
+  },
+  "routes": [
+    { "src": "/api/rewrite", "dest": "/api/rewrite.js" }
   ]
 }
