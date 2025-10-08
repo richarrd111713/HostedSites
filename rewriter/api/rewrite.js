@@ -1,3 +1,4 @@
+// api/rewrite.js
 import fetch from "node-fetch";
 import { JSDOM } from "jsdom";
 
@@ -17,23 +18,29 @@ export default async function handler(req, res) {
 
     const contentType = upstream.headers.get("content-type") || "";
 
-    // If not HTML (CSS, JS, images, fonts), return directly
+    // Non-HTML (fonts, JS, CSS, images, etc.)
     if (!contentType.includes("text/html")) {
       const buffer = await upstream.arrayBuffer();
+
+      // Set proper content type
       res.setHeader("Content-Type", contentType);
-      // Make assets CORS friendly
+
+      // Set CORS headers
       res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "*");
+
       res.send(Buffer.from(buffer));
       return;
     }
 
-    // Parse HTML
+    // HTML page
     const html = await upstream.text();
     const dom = new JSDOM(html);
     const doc = dom.window.document;
 
-    // Rewrite all links to stay in proxy
-    doc.querySelectorAll("a[href]").forEach((a) => {
+    // Rewrite all links (<a>) to stay in proxy
+    doc.querySelectorAll("a[href]").forEach(a => {
       const href = a.getAttribute("href");
       if (!href.startsWith("#") && !href.startsWith("javascript:")) {
         const newHref = new URL(href, target).href;
@@ -41,8 +48,10 @@ export default async function handler(req, res) {
       }
     });
 
-    // Rewrite scripts, images, and CSS
-    doc.querySelectorAll("img[src], script[src], link[href]").forEach((el) => {
+    // Rewrite assets (images, scripts, CSS, fonts, videos, iframes)
+    doc.querySelectorAll(
+      "img[src], script[src], link[href], video[src], audio[src], source[src], iframe[src]"
+    ).forEach(el => {
       const attr = el.src ? "src" : "href";
       const val = el[attr];
       if (val && !val.startsWith("data:")) {
@@ -51,19 +60,16 @@ export default async function handler(req, res) {
       }
     });
 
-    // Inject base tag so relative paths work
+    // Inject a <base> to keep relative URLs working
     const base = doc.createElement("base");
-    base.href = target;
+    base.href = `/api/rewrite?url=${encodeURIComponent(target)}`;
     doc.head.prepend(base);
 
-    // Force iframeable headers
+    // Add CORS headers for HTML too
     res.setHeader("Content-Type", "text/html");
-    res.setHeader("X-Frame-Options", "ALLOWALL");
-    res.setHeader(
-      "Content-Security-Policy",
-      "default-src * 'unsafe-inline' 'unsafe-eval'; frame-ancestors *"
-    );
     res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "*");
 
     res.send(dom.serialize());
   } catch (err) {
