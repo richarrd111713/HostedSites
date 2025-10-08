@@ -9,37 +9,40 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Use fetch with proper headers and follow redirects
+    // Fetch the target page
     const upstream = await fetch(target, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (proxy)",
-        "Accept": "*/*",
-        "Referer": target,
-        "Origin": target
-      },
+      headers: { "user-agent": "Mozilla/5.0 (proxy)" },
       redirect: "follow"
     });
 
     const contentType = upstream.headers.get("content-type") || "";
 
-    // If not HTML (images, CSS, fonts, JS, etc.) just stream it back
-    if (!contentType.includes("text/html")) {
-      // Copy headers from upstream
-      upstream.headers.forEach((value, key) => {
+    // Copy all headers except some that break
+    upstream.headers.forEach((value, key) => {
+      if (!["content-length", "access-control-allow-origin"].includes(key.toLowerCase())) {
         res.setHeader(key, value);
-      });
+      }
+    });
 
+    // Always set CORS headers
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "*");
+
+    // If it's not HTML, stream directly
+    if (!contentType.includes("text/html")) {
       const buffer = await upstream.arrayBuffer();
-      res.status(200).send(Buffer.from(buffer));
+      res.setHeader("Content-Type", contentType);
+      res.send(Buffer.from(buffer));
       return;
     }
 
-    // --- HTML processing ---
+    // Parse and rewrite HTML
     const html = await upstream.text();
     const dom = new JSDOM(html);
     const doc = dom.window.document;
 
-    // Rewrite all <a> links to go through proxy
+    // Rewrite all links to go through proxy
     doc.querySelectorAll("a[href]").forEach(a => {
       const href = a.getAttribute("href");
       if (href && !href.startsWith("#") && !href.startsWith("javascript:")) {
@@ -48,8 +51,8 @@ export default async function handler(req, res) {
       }
     });
 
-    // Rewrite scripts, CSS, images, fonts
-    doc.querySelectorAll("img[src], script[src], link[href]").forEach(el => {
+    // Rewrite images, scripts, CSS, fonts, and other linked assets
+    doc.querySelectorAll("img[src], script[src], link[href], source[src], video[src], audio[src]").forEach(el => {
       const attr = el.src ? "src" : "href";
       const val = el[attr];
       if (val && !val.startsWith("data:")) {
@@ -58,17 +61,31 @@ export default async function handler(req, res) {
       }
     });
 
-    // Inject base tag to keep relative URLs working
+    // Rewrite inline CSS URLs
+    doc.querySelectorAll("style").forEach(style => {
+      style.innerHTML = style.innerHTML.replace(
+        /url\((['"]?)(.*?)\1\)/g,
+        (match, q, url) => {
+          if (!url.startsWith("data:")) {
+            const absolute = new URL(url, target).href;
+            return `url('${`/api/rewrite?url=${encodeURIComponent(absolute)}`}')`;
+          }
+          return match;
+        }
+      );
+    });
+
+    // Rewrite base tag
     const base = doc.createElement("base");
     base.href = target;
-    if (doc.head) doc.head.prepend(base);
+    doc.head.prepend(base);
 
-    // Return rewritten HTML
+    // Send rewritten HTML
     res.setHeader("Content-Type", "text/html");
-    res.status(200).send(dom.serialize());
+    res.send(dom.serialize());
 
   } catch (err) {
-    console.error("Rewrite error:", err);
+    console.error(err);
     res.status(500).send("Rewrite error");
   }
 }
