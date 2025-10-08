@@ -12,12 +12,33 @@ const HOP_BY_HOP = [
   "upgrade",
 ];
 
+async function fetchFollowServerSide(url, opts = {}, maxRedirects = 5) {
+  let current = url;
+  for (let i = 0; i <= maxRedirects; i++) {
+    const resp = await fetch(current, { ...opts, redirect: "manual" });
+    // If redirect, resolve Location and continue loop
+    if (resp.status >= 300 && resp.status < 400) {
+      const loc = resp.headers.get("location");
+      if (!loc) return resp;
+      try {
+        current = new URL(loc, current).href;
+        continue;
+      } catch {
+        return resp;
+      }
+    }
+    // Not a redirect: return final response
+    return resp;
+  }
+  throw new Error("Too many redirects");
+}
+
 export default async function handler(req, res) {
-  // Always set CORS for every response we might send
+  // Always set CORS and common response headers
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
-  res.setHeader("Access-Control-Expose-Headers", "Content-Type,Content-Length,Location");
+  res.setHeader("Access-Control-Expose-Headers", "Content-Type,Content-Length");
   if (req.method === "OPTIONS") return res.status(204).end();
 
   const target = req.query.url;
@@ -25,54 +46,37 @@ export default async function handler(req, res) {
   if (!/^https?:\/\//i.test(target)) return res.status(400).send("Invalid URL");
 
   try {
-    const upstream = await fetch(target, {
+    // Fetch with server-side redirect handling
+    const upstream = await fetchFollowServerSide(target, {
       headers: { "User-Agent": "Mozilla/5.0 (proxy)" },
-      redirect: "follow",
-    });
+    }, 8);
 
     const contentType = upstream.headers.get("content-type") || "";
 
-    // For non-HTML resources forward body and useful headers, but
-    // rewrite Location to route through our proxy and ensure CORS header remains
+    // If non-HTML, stream the body back with headers, never forward upstream Location or its CORS
     if (!contentType.includes("text/html")) {
       const buffer = await upstream.arrayBuffer();
 
-      // Forward useful headers from upstream, excluding hop-by-hop
+      // Forward useful headers, excluding hop-by-hop and ACL-Origin and Location
       upstream.headers.forEach((value, name) => {
         const lower = name.toLowerCase();
         if (HOP_BY_HOP.includes(lower)) return;
-
-        // Never forward upstream Access-Control-Allow-Origin (we control it)
         if (lower === "access-control-allow-origin") return;
-
-        // Rewrite Location so browser will call our proxy rather than the upstream host
-        if (lower === "location") {
-          try {
-            // Convert absolute or relative Location into a proxied URL
-            const resolved = new URL(value, target).href;
-            const proxied = `/api/rewrite?url=${encodeURIComponent(resolved)}`;
-            res.setHeader("Location", proxied);
-            return;
-          } catch {
-            return;
-          }
-        }
-
+        if (lower === "location") return; // do not forward upstream redirects
+        // set header (keep original casing from upstream.name)
         res.setHeader(name, value);
       });
 
-      // Ensure CORS and framing headers so fonts/scripts are loadable in browser contexts
+      // Ensure CORS/frame/content-type
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("X-Frame-Options", "ALLOWALL");
-
       if (contentType) res.setHeader("Content-Type", contentType);
 
-      // Set status code from upstream (includes redirects)
-      res.status(upstream.status);
+      res.status(upstream.status || 200);
       return res.send(Buffer.from(buffer));
     }
 
-    // HTML: parse and rewrite links/assets/forms
+    // HTML case: parse, rewrite assets to route through this proxy, then return HTML
     const html = await upstream.text();
     const dom = new JSDOM(html);
     const doc = dom.window.document;
