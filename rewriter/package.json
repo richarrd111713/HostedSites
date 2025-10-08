@@ -2,8 +2,7 @@
   "name": "rewriter",
   "version": "1.0.0",
   "type": "module",
-  "dependencies": {
-    "node-fetch": "^3.3.2",
-    "jsdom": "^24.0.0"
+  "engines": {
+    "node": "22.x"
   }
 }

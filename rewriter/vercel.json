@@ -1,10 +1,5 @@
 {
   "version": 2,
-  "functions": {
-    "api/rewrite.js": {
-      "runtime": "vercel-nodejs@4.0.0"
-    }
-  },
   "routes": [
     { "src": "/api/rewrite", "dest": "/api/rewrite.js" }
   ]
