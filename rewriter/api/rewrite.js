@@ -3,33 +3,52 @@ import { JSDOM } from "jsdom";
 
 export default async function handler(req, res) {
   const target = req.query.url;
-  if (!target) return res.status(400).send("Missing ?url=");
+  if (!target) {
+    res.status(400).send("Missing ?url=");
+    return;
+  }
 
   try {
-    const upstream = await fetch(target, { headers: { "user-agent": "Mozilla/5.0 (proxy)" } });
+    // Use fetch with proper headers and follow redirects
+    const upstream = await fetch(target, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (proxy)",
+        "Accept": "*/*",
+        "Referer": target,
+        "Origin": target
+      },
+      redirect: "follow"
+    });
+
     const contentType = upstream.headers.get("content-type") || "";
 
+    // If not HTML (images, CSS, fonts, JS, etc.) just stream it back
     if (!contentType.includes("text/html")) {
-      res.setHeader("Content-Type", contentType);
+      // Copy headers from upstream
+      upstream.headers.forEach((value, key) => {
+        res.setHeader(key, value);
+      });
+
       const buffer = await upstream.arrayBuffer();
-      return res.send(Buffer.from(buffer));
+      res.status(200).send(Buffer.from(buffer));
+      return;
     }
 
+    // --- HTML processing ---
     const html = await upstream.text();
     const dom = new JSDOM(html);
     const doc = dom.window.document;
 
-    // Rewrite all links
+    // Rewrite all <a> links to go through proxy
     doc.querySelectorAll("a[href]").forEach(a => {
       const href = a.getAttribute("href");
-      if (!href.startsWith("#") && !href.startsWith("javascript:")) {
-        const absolute = new URL(href, target).href;
-        a.href = `/api/rewrite?url=${encodeURIComponent(absolute)}`;
-        a.setAttribute("target", "_self"); // stay inside the proxy
+      if (href && !href.startsWith("#") && !href.startsWith("javascript:")) {
+        const newHref = new URL(href, target).href;
+        a.href = `/api/rewrite?url=${encodeURIComponent(newHref)}`;
       }
     });
 
-    // Rewrite images, scripts, styles
+    // Rewrite scripts, CSS, images, fonts
     doc.querySelectorAll("img[src], script[src], link[href]").forEach(el => {
       const attr = el.src ? "src" : "href";
       const val = el[attr];
@@ -39,28 +58,17 @@ export default async function handler(req, res) {
       }
     });
 
-    // Inject client-side fetch/XHR interceptor
-    const interceptor = doc.createElement("script");
-    interceptor.textContent = `
-      const originalFetch = window.fetch;
-      window.fetch = function(url, ...args) {
-        if (typeof url === "string" && !url.startsWith("/api/rewrite")) {
-          url = "/api/rewrite?url=" + encodeURIComponent(new URL(url, window.location.href).href);
-        }
-        return originalFetch(url, ...args);
-      };
-      const originalXHROpen = XMLHttpRequest.prototype.open;
-      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-        if (!url.startsWith("/api/rewrite")) url = "/api/rewrite?url=" + encodeURIComponent(new URL(url, window.location.href).href);
-        return originalXHROpen.call(this, method, url, ...rest);
-      };
-    `;
-    doc.head.appendChild(interceptor);
+    // Inject base tag to keep relative URLs working
+    const base = doc.createElement("base");
+    base.href = target;
+    if (doc.head) doc.head.prepend(base);
 
+    // Return rewritten HTML
     res.setHeader("Content-Type", "text/html");
-    res.send(dom.serialize());
+    res.status(200).send(dom.serialize());
+
   } catch (err) {
-    console.error(err);
+    console.error("Rewrite error:", err);
     res.status(500).send("Rewrite error");
   }
 }
