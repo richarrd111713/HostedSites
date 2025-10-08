@@ -1,91 +1,78 @@
 import fetch from "node-fetch";
 import { JSDOM } from "jsdom";
 
+// Utility to rewrite URLs to go through our proxy
+function rewriteUrl(originalUrl, proxyBase) {
+  return `${proxyBase}?url=${encodeURIComponent(originalUrl)}`;
+}
+
 export default async function handler(req, res) {
   const target = req.query.url;
-  if (!target) {
-    res.status(400).send("Missing ?url=");
-    return;
-  }
+  if (!target) return res.status(400).send("Missing ?url=");
+
+  const proxyBase = `${process.env.PROXY_BASE || "https://gltsclasstools.segundoazjustin633.workers.dev/api/proxy"}`;
 
   try {
-    // Fetch the target page
     const upstream = await fetch(target, {
       headers: { "user-agent": "Mozilla/5.0 (proxy)" },
-      redirect: "follow"
+      redirect: "follow",
     });
 
     const contentType = upstream.headers.get("content-type") || "";
 
-    // Copy all headers except some that break
-    upstream.headers.forEach((value, key) => {
-      if (!["content-length", "access-control-allow-origin"].includes(key.toLowerCase())) {
-        res.setHeader(key, value);
-      }
-    });
-
-    // Always set CORS headers
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "*");
-
-    // If it's not HTML, stream directly
+    // Pass non-HTML files directly
     if (!contentType.includes("text/html")) {
       const buffer = await upstream.arrayBuffer();
       res.setHeader("Content-Type", contentType);
-      res.send(Buffer.from(buffer));
-      return;
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      return res.send(Buffer.from(buffer));
     }
 
-    // Parse and rewrite HTML
+    // Parse HTML and rewrite
     const html = await upstream.text();
     const dom = new JSDOM(html);
     const doc = dom.window.document;
 
-    // Rewrite all links to go through proxy
+    // Remove CSP / X-Frame-Options
+    res.removeHeader("content-security-policy");
+    res.removeHeader("x-frame-options");
+
+    // Rewrite <a> links
     doc.querySelectorAll("a[href]").forEach(a => {
       const href = a.getAttribute("href");
-      if (href && !href.startsWith("#") && !href.startsWith("javascript:")) {
-        const newHref = new URL(href, target).href;
-        a.href = `/api/rewrite?url=${encodeURIComponent(newHref)}`;
+      if (!href.startsWith("#") && !href.startsWith("javascript:")) {
+        a.href = rewriteUrl(new URL(href, target).href, proxyBase);
       }
     });
 
-    // Rewrite images, scripts, CSS, fonts, and other linked assets
-    doc.querySelectorAll("img[src], script[src], link[href], source[src], video[src], audio[src]").forEach(el => {
+    // Rewrite assets: images, scripts, styles
+    doc.querySelectorAll("img[src], script[src], link[href]").forEach(el => {
       const attr = el.src ? "src" : "href";
       const val = el[attr];
       if (val && !val.startsWith("data:")) {
-        const absolute = new URL(val, target).href;
-        el[attr] = `/api/rewrite?url=${encodeURIComponent(absolute)}`;
+        el[attr] = rewriteUrl(new URL(val, target).href, proxyBase);
       }
     });
 
-    // Rewrite inline CSS URLs
-    doc.querySelectorAll("style").forEach(style => {
-      style.innerHTML = style.innerHTML.replace(
-        /url\((['"]?)(.*?)\1\)/g,
-        (match, q, url) => {
-          if (!url.startsWith("data:")) {
-            const absolute = new URL(url, target).href;
-            return `url('${`/api/rewrite?url=${encodeURIComponent(absolute)}`}')`;
-          }
-          return match;
-        }
-      );
+    // Rewrite forms
+    doc.querySelectorAll("form[action]").forEach(form => {
+      const action = form.getAttribute("action");
+      if (action && !action.startsWith("#")) {
+        form.action = rewriteUrl(new URL(action, target).href, proxyBase);
+      }
     });
 
-    // Rewrite base tag
+    // Rewrite base tag to avoid relative issues
     const base = doc.createElement("base");
     base.href = target;
     doc.head.prepend(base);
 
-    // Send rewritten HTML
     res.setHeader("Content-Type", "text/html");
+    res.setHeader("Access-Control-Allow-Origin", "*");
     res.send(dom.serialize());
 
   } catch (err) {
-    console.error(err);
-    res.status(500).send("Rewrite error");
+    console.error("Rewrite error:", err);
+    res.status(500).send("Proxy error");
   }
 }
