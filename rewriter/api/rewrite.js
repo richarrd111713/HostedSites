@@ -3,49 +3,61 @@ import { JSDOM } from "jsdom";
 
 export default async function handler(req, res) {
   const target = req.query.url;
-  if (!target) return res.status(400).send("Missing ?url=");
+  if (!target) {
+    res.status(400).send("Missing ?url=");
+    return;
+  }
 
   try {
+    // Fetch the target page
     const upstream = await fetch(target, {
-      headers: { "User-Agent": "Mozilla/5.0 (ProxyBrowser)" },
+      headers: { "user-agent": "Mozilla/5.0 (proxy)" },
       redirect: "follow",
     });
 
     const contentType = upstream.headers.get("content-type") || "";
 
-    // If not HTML, return raw
+    // If not HTML (CSS, JS, images, fonts), return directly
     if (!contentType.includes("text/html")) {
       const buffer = await upstream.arrayBuffer();
       res.setHeader("Content-Type", contentType);
+      // Make assets CORS friendly
       res.setHeader("Access-Control-Allow-Origin", "*");
-      return res.send(Buffer.from(buffer));
+      res.send(Buffer.from(buffer));
+      return;
     }
 
-    // HTML rewriting
+    // Parse HTML
     const html = await upstream.text();
     const dom = new JSDOM(html);
     const doc = dom.window.document;
 
-    // Rewrite all links to go through proxy
-    doc.querySelectorAll("a[href]").forEach(a => {
+    // Rewrite all links to stay in proxy
+    doc.querySelectorAll("a[href]").forEach((a) => {
       const href = a.getAttribute("href");
-      if (href && !href.startsWith("#") && !href.startsWith("javascript:")) {
+      if (!href.startsWith("#") && !href.startsWith("javascript:")) {
         const newHref = new URL(href, target).href;
         a.href = `/api/rewrite?url=${encodeURIComponent(newHref)}`;
-        a.target = "_self"; // stay in same iframe
       }
     });
 
-    // Rewrite resources (images, scripts, css, fonts)
-    doc.querySelectorAll("img[src], script[src], link[href]").forEach(el => {
+    // Rewrite scripts, images, and CSS
+    doc.querySelectorAll("img[src], script[src], link[href]").forEach((el) => {
       const attr = el.src ? "src" : "href";
       const val = el[attr];
       if (val && !val.startsWith("data:")) {
-        el[attr] = `/api/rewrite?url=${encodeURIComponent(new URL(val, target).href)}`;
+        const newURL = new URL(val, target).href;
+        el[attr] = `/api/rewrite?url=${encodeURIComponent(newURL)}`;
       }
     });
 
-    // Inject headers to allow iframe embedding
+    // Inject base tag so relative paths work
+    const base = doc.createElement("base");
+    base.href = target;
+    doc.head.prepend(base);
+
+    // Force iframeable headers
+    res.setHeader("Content-Type", "text/html");
     res.setHeader("X-Frame-Options", "ALLOWALL");
     res.setHeader(
       "Content-Security-Policy",
@@ -53,15 +65,9 @@ export default async function handler(req, res) {
     );
     res.setHeader("Access-Control-Allow-Origin", "*");
 
-    // Fix base tag
-    const base = doc.createElement("base");
-    base.href = target;
-    doc.head.prepend(base);
-
-    res.setHeader("Content-Type", "text/html");
     res.send(dom.serialize());
   } catch (err) {
     console.error(err);
-    res.status(500).send("Rewrite error: " + err.message);
+    res.status(500).send("Rewrite error");
   }
 }
