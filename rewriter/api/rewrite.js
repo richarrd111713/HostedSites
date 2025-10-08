@@ -13,16 +13,15 @@ const HOP_BY_HOP = [
 ];
 
 export default async function handler(req, res) {
-  // Allow OPTIONS preflight for browser requests (fonts, scripts often trigger CORS preflight)
+  // Always set CORS for every response we might send
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
+  res.setHeader("Access-Control-Expose-Headers", "Content-Type,Content-Length,Location");
   if (req.method === "OPTIONS") return res.status(204).end();
 
   const target = req.query.url;
   if (!target) return res.status(400).send("Missing ?url=");
-
-  // Basic validation to reduce SSRF risk
   if (!/^https?:\/\//i.test(target)) return res.status(400).send("Invalid URL");
 
   try {
@@ -33,26 +32,42 @@ export default async function handler(req, res) {
 
     const contentType = upstream.headers.get("content-type") || "";
 
-    // Forward status for non-HTML resources and include CORS header so browser can use them
+    // For non-HTML resources forward body and useful headers, but
+    // rewrite Location to route through our proxy and ensure CORS header remains
     if (!contentType.includes("text/html")) {
       const buffer = await upstream.arrayBuffer();
 
       // Forward useful headers from upstream, excluding hop-by-hop
       upstream.headers.forEach((value, name) => {
-        if (!HOP_BY_HOP.includes(name.toLowerCase())) {
-          // Don't overwrite our CORS header
-          if (name.toLowerCase() === "access-control-allow-origin") return;
-          res.setHeader(name, value);
+        const lower = name.toLowerCase();
+        if (HOP_BY_HOP.includes(lower)) return;
+
+        // Never forward upstream Access-Control-Allow-Origin (we control it)
+        if (lower === "access-control-allow-origin") return;
+
+        // Rewrite Location so browser will call our proxy rather than the upstream host
+        if (lower === "location") {
+          try {
+            // Convert absolute or relative Location into a proxied URL
+            const resolved = new URL(value, target).href;
+            const proxied = `/api/rewrite?url=${encodeURIComponent(resolved)}`;
+            res.setHeader("Location", proxied);
+            return;
+          } catch {
+            return;
+          }
         }
+
+        res.setHeader(name, value);
       });
 
-      // Ensure CORS and frame headers so fonts/scripts are loadable in browser contexts
+      // Ensure CORS and framing headers so fonts/scripts are loadable in browser contexts
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("X-Frame-Options", "ALLOWALL");
-      // Avoid Vercel/Express double-encoding issues by setting Content-Type explicitly
+
       if (contentType) res.setHeader("Content-Type", contentType);
 
-      // Set status code from upstream
+      // Set status code from upstream (includes redirects)
       res.status(upstream.status);
       return res.send(Buffer.from(buffer));
     }
