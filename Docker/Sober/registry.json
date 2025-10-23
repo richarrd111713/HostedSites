@@ -5,20 +5,21 @@
     {
       "name": "Roblox (Sober)",
       "description": "Runs Roblox Player using the Sober Flatpak inside a container.",
-      "image": "yourdockerhubusername/sober-kasm",
       "type": "server",
+      "image": "sober-kasm",
+      "friendly_name": "Roblox (Sober)",
       "categories": ["Gaming", "Roblox", "Linux"],
+      "thumbnail_url": "https://sober.vinegarhq.org/sober.png",
+      "session_time_limit": 3600,
+      "session_banner": "Roblox is running via Sober Flatpak. Performance may vary.",
       "launch_config": {
         "container": {
-          "image": "yourdockerhubusername/sober-kasm",
+          "image": "sober-kasm",
           "cmd": ["flatpak", "run", "org.vinegarhq.Sober"],
           "privileged": true,
           "gpu": true
         }
-      },
-      "thumbnail_url": "https://sober.vinegarhq.org/sober.png",
-      "session_time_limit": 3600,
-      "session_banner": "Roblox is running via Sober Flatpak. Performance may vary."
+      }
     }
   ]
 }
